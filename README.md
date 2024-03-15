@@ -11,8 +11,10 @@ LIVE-CHAT is a voice-based conversational assistant application that uses Speech
 
 ## Setup
 
-1. Clone the repository
-2. Create a Conda environment `conda create -n live-agent python=3.11` and activate it `conda activate live-agent`
+1. Clone the repository and `cd live-chat`
+2. Create a python environment 
+    - Conda: `conda create -n live-chat python=3.11` and activate with `conda activate live-chat`
+    - Python Virtual Environment: `python -m venv live-agent` && activate with `source live-agent/bin/activate` (Linux) or `live-agent/bin/activate` (Windows)
 3. Install the required Python packages by running `pip install -r requirements.txt`
 4. Set up your environment variables in a `.env` file. You'll need to provide your API keys for the TTS and STT services. You can also use the offline modes without any API keys, however you will have to install and configure Ollama.
 5. Run the application with `python app.py`
