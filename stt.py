@@ -19,9 +19,9 @@ from deepgram import (
 load_dotenv()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-global_ndarray = None
-silence_threshold=400
-silence_ratio=100
+
+BLOCKSIZE=16000
+SAMPLE_RATE=16000
 
 class TranscriptCollector:
     def __init__(self):
@@ -39,6 +39,14 @@ class TranscriptCollector:
 transcript_collector = TranscriptCollector()
 
 class SpeechToText:
+    global_ndarray = None
+    silence_threshold=400 # should be set to the lowest sample amplitude that the speech in the audio material has
+    silence_ratio=50 # number of samples in one buffer that are allowed to be higher than threshold
+    no_speech_threshold=0.1
+    silence_duration_threshold = 1  # seconds of silence before processing
+    silence_counter = 0  # counter for continuous silence
+    model = None
+
     def __init__(self):
         stt_mapping = {
             'deepgram': self.deepgram, 
@@ -54,11 +62,15 @@ class SpeechToText:
         if self.stt_class is None:
             raise ValueError(f'Invalid stt type: {stt_type}')
         
+        if self.stt_class == self.whisper:
+            # Can choose another model (https://github.com/openai/whisper)
+            self.model = whisper.load_model('small.en', device=device)
+        
     async def process(self, callback):
         await self.stt_class(callback)
 
     async def deepgram(self, callback):
-        global transcript_collector, global_ndarray
+        global transcript_collector
 
         transcription_complete = asyncio.Event()  # Event to signal transcription completion
 
@@ -123,68 +135,47 @@ class SpeechToText:
 
         transcription_complete = threading.Event()
 
-        print("Listening...")
-
-        def audio_callback(indata, frames, audiotime, status, **kwargs):   
-            global global_ndarray, silence_ratio, silence_threshold
-
+        def audio_callback(indata, frames, audiotime, status, **kwargs):            
             indata_flattened = abs(indata.flatten())
-
-            # concatenate buffers if the global buffer is not empty
-            if (global_ndarray is not None):
-                global_ndarray = np.concatenate((global_ndarray, indata), dtype='int16')
-            else:
-                global_ndarray = indata
-                
-            # concatenate buffers if the end of the current buffer is not silent
-            if (np.average((indata_flattened[-100:-1])) > silence_threshold/15):
-                return;
-            else:
-                local_ndarray = global_ndarray.copy()
-                global_ndarray = None
-                indata_transformed = local_ndarray.flatten().astype(np.float32) / 32768.0
             
-            # discard buffers that contain mostly silence
-            if (np.asarray(np.where(indata_flattened > silence_threshold)).size < silence_ratio):
-                print("Silence...")
+            # Check if the number of samples above the threshold is less than the ratio
+            if (np.asarray(np.where(indata_flattened > self.silence_threshold)).size < self.silence_ratio):
+                self.silence_counter += 1  # increment the silence counter
+                print(f"Silence {self.silence_counter}...")
             else:
+                # If the number of samples above the threshold is greater than the ratio, reset the silence counter
+                if (self.global_ndarray is not None):
+                    self.global_ndarray = np.concatenate((self.global_ndarray, indata), dtype='int16')
+                else:
+                    self.global_ndarray = indata
+                
+            # If the silence counter exceeds the silence duration threshold, process the audio
+            if (self.silence_counter > self.silence_duration_threshold * (SAMPLE_RATE / frames) and self.global_ndarray is not None):
+                self.silence_counter = 0
+
+                local_ndarray = self.global_ndarray.copy()
+                self.global_ndarray = None
+                indata_transformed = local_ndarray.flatten().astype(np.float32) / 32768.0
+                indata_transformed_tensor = torch.tensor(indata_transformed)
+
                 start_time = time.time()
-                model = whisper.load_model('base', device=device) # Can choose another model (https://github.com/openai/whisper)
-                result = model.transcribe(indata_transformed, language='en', no_speech_threshold=0.1)
+                result = self.model.transcribe(indata_transformed_tensor, language='en', no_speech_threshold=self.no_speech_threshold)
                 end_time = time.time()
                 elapsed_time = int((end_time - start_time) * 1000)
                 print(f">> STT ({elapsed_time}ms)")
 
+                if result['text'] != "":
+                    print(f"Human: {result['text']}")
+                    callback(result['text'])  # Call the callback with the full_sentence
+                    transcript_collector.reset()
+                    transcription_complete.set()  # Signal to stop transcription and exit
+
                 del local_ndarray
                 del indata_flattened
 
-                if isinstance(result, dict):
-                    # Handle the case where result is a dictionary
-                    segments = result.get('segments', [])
-                else:
-                    # Handle the case where result is an expected object with a 'segments' attribute
-                    segments = result.segments
-
-                for segment in segments:
-                    if isinstance(segment, dict):
-                        # Handle the case where segment is a dictionary
-                        text = segment.get('text', '').strip()
-                    else:
-                        # Handle the case where segment is an expected object with a 'text' attribute
-                        text = segment.text.strip() if segment.text else ''
-
-                    if len(text) > 0:
-                        transcript_collector.add_part(text)
-                        full_sentence = transcript_collector.get_full_transcript()
-                        if len(full_sentence.strip()) > 0:
-                            full_sentence = full_sentence.strip()
-                            print(f"Human: {full_sentence}")
-                            callback(full_sentence)  # Call the callback with the full_sentence
-                            transcript_collector.reset()
-                            transcription_complete.set()  # Signal to stop transcription and exit
-        
-        with sd.InputStream(samplerate=16000, dtype='int16', channels=1, blocksize=24678, callback=audio_callback):
+        with sd.InputStream(samplerate=SAMPLE_RATE, dtype='int16', channels=1, blocksize=BLOCKSIZE, callback=audio_callback):
             try:
+                print("Listening...")
                 transcription_complete.wait()
                 raise sd.CallbackStop
             except sd.CallbackStop:

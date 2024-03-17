@@ -10,9 +10,11 @@ load_dotenv()
 
 class ConversationManager:
     transcription_response = ""
+
+    # Init
+    stt = SpeechToText()
     llm = LanguageModelProcessor()
     tts = TextToSpeech()
-    stt = SpeechToText()
 
     def __init__(self):
         pass
@@ -20,6 +22,10 @@ class ConversationManager:
     async def main(self):
         def handle_full_sentence(full_sentence):
             self.transcription_response = full_sentence
+
+        # Init
+        llm_response = self.llm.process('Hello! Who are you?')
+        await self.tts.process(text=llm_response)
 
         while True:
             # Listening with STT
