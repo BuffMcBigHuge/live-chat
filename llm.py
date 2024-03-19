@@ -17,7 +17,10 @@ from langchain.chains import LLMChain
 load_dotenv()
 
 class LanguageModelProcessor:
-    def __init__(self):
+    model_type = None
+    model_name = None
+     
+    def __init__(self, type=None, model=None):
         llm_mapping = { 
             'groq': ChatGroq, 
             'ollama': ChatOllama,
@@ -29,33 +32,37 @@ class LanguageModelProcessor:
             'openai': ['gpt-4-turbo-preview', 'gpt-3.5-turbo']
         }
 
-        print("Select the LLM model type:")
-        for i, model_type in enumerate(llm_mapping.keys(), start=1):
-            print(f"{i}. {model_type}")
-        model_type_index = int(input("Enter the number of your choice: ")) - 1
-        model_type = list(llm_mapping.keys())[model_type_index]
+        #  Select the LLM type:
+        if (type is not None):
+            model_type = type
+            model_name = model
+            llm_class  = llm_mapping.get(model_type)
+            if (model_name is not None and model_name not in model_names[model_type]):
+                raise ValueError(f'Invalid model name: {model_name}')
+        else:
+            print("Select the LLM model type:")
+            for i, model_type in enumerate(llm_mapping.keys(), start=1):
+                print(f"{i}. {model_type}")
+            model_type_index = int(input("Enter the number of your choice: ")) - 1
+            model_type = list(llm_mapping.keys())[model_type_index]
 
-        print(f"Select the {model_type} model name:")
-        for i, model_name in enumerate(model_names[model_type], start=1):
-            print(f"{i}. {model_name}")
-        model_name_index = int(input("Enter the number of your choice: ")) - 1
-        model_name = model_names[model_type][model_name_index]
-
-        llm_class = llm_mapping.get(model_type)
+            print(f"Select the {model_type} model name:")
+            for i, model_name in enumerate(model_names[model_type], start=1):
+                print(f"{i}. {model_name}")
+            model_name_index = int(input("Enter the number of your choice: ")) - 1
+            model_name = model_names[model_type][model_name_index]
+            llm_class = llm_mapping.get(model_type)
+            
         if llm_class is None:
             raise ValueError(f'Invalid model type: {model_type}')
 
+        # Create the LLM
         if model_type == 'ollama':
             self.llm = llm_class(model=model_name, base_url=os.getenv("OLLAMA_BASE_URL"))
         elif model_type == 'groq':
             self.llm = llm_class(temperature=0, model_name=model_name, groq_api_key=os.getenv("GROQ_API_KEY"))
         elif model_type == 'openai':
             self.llm = llm_class(temperature=0, model_name=model_name, openai_api_key=os.getenv("OPENAI_API_KEY"))
-
-        # self.llm = ChatOllama(model="mixtral", base_url="http://10.0.0.4:11434")
-        # self.llm = ChatGroq(temperature=0, model_name="mixtral-8x7b-32768", groq_api_key=os.getenv("GROQ_API_KEY"))
-        # self.llm = ChatOpenAI(temperature=0, model_name="gpt-4-0125-preview", openai_api_key=os.getenv("OPENAI_API_KEY"))
-        # self.llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-0125", openai_api_key=os.getenv("OPENAI_API_KEY"))
 
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 

@@ -29,6 +29,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 class TextToSpeech:
     language = 'en'
     speaker_wav = None
+    tts_class = None
     tts = None
     voice = None
     '''
@@ -37,23 +38,31 @@ class TextToSpeech:
     chunks_queue = queue.Queue()
     '''
 
-    def __init__(self):
+    def __init__(self, model=None, voice=None):
         tts_mapping = {
             'deepgram': self.deepgramTTS,
             'edgeTTS': self.edgeTTS,
             'coquiTTS': self.coquiTTS
         }
-        print("Select the TTS type:")
-        for i, tts in enumerate(tts_mapping.keys(), start=1):
-            print(f"{i}. {tts}")
-        tts_index = int(input("Enter the number of your choice: ")) - 1
-        tts_type = list(tts_mapping.keys())[tts_index]
-        self.tts_class = tts_mapping.get(tts_type)
+
+        # Select the TTS model
+        if (model is not None):
+            self.tts_class  = tts_mapping.get(model)
+        else:
+            print("Select the TTS model:")
+            for i, tts in enumerate(tts_mapping.keys(), start=1):
+                print(f"{i}. {tts}")
+            tts_index = int(input("Enter the number of your choice: ")) - 1
+            tts_type = list(tts_mapping.keys())[tts_index]
+            self.tts_class = tts_mapping.get(tts_type)
 
         if self.tts_class is None:
-            raise ValueError(f'Invalid tts type: {tts_type}')
+            raise ValueError(f'Invalid tts model: {tts_type}')
 
-        if self.tts_class == self.deepgramTTS:
+        # Select the voice
+        if (voice is not None):
+            self.voice = voice
+        elif self.tts_class == self.deepgramTTS:
             asyncio.run(self.select_deepgramTTS_voice())
         elif self.tts_class == self.edgeTTS:
             asyncio.run(self.select_edgeTTS_voice())
@@ -63,20 +72,22 @@ class TextToSpeech:
     async def select_edgeTTS_voice(self):
         voices = await edge_tts.list_voices()
         print("Select the voice:")
-        for i, voice in enumerate(voices, start=1):
-            print(f"{i}. {voice['FriendlyName']}")
+        english_voices = [voice for voice in voices if voice['Locale'].startswith('en-')]
+
+        for i, voice in enumerate(english_voices, start=1):
+            print(f"{i}. f'{voice['FriendlyName']} ({voice['ShortName']})'")
 
         while True:
             try:
                 voice_index = int(input("Enter the number of your choice: ")) - 1
-                if voice_index < 0 or voice_index >= len(voices):
+                if voice_index < 0 or voice_index >= len(english_voices):
                     print("Invalid choice. Please enter a number corresponding to the list of voices.")
                 else:
                     break
             except ValueError:
                 print("Invalid input. Please enter a number.")
 
-        self.voice = voices[voice_index]['ShortName']
+        self.voice = english_voices[voice_index]['ShortName']
 
     async def select_coquiTTS_voice(self):
         # Get a list of .wav files in the ./voices directory

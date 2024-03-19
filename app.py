@@ -15,6 +15,9 @@ class ConversationManager:
     stt = SpeechToText()
     llm = LanguageModelProcessor()
     tts = TextToSpeech()
+    # stt = SpeechToText(model='whisper')
+    # llm = LanguageModelProcessor(type='groq', model='mixtral-8x7b-32768')
+    # tts = TextToSpeech(model='edgeTTS', voice='en-IE-EmilyNeural')
 
     def __init__(self):
         pass

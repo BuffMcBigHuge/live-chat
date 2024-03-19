@@ -47,21 +47,26 @@ class SpeechToText:
     silence_counter = 0  # counter for continuous silence
     model = None
 
-    def __init__(self):
+    def __init__(self, model=None):
         stt_mapping = {
             'deepgram': self.deepgram, 
             'whisper': self.whisper
         }
-        print("Select the STT type:")
-        for i, stt in enumerate(stt_mapping.keys(), start=1):
-            print(f"{i}. {stt}")
-        stt_index = int(input("Enter the number of your choice: ")) - 1
-        stt_type = list(stt_mapping.keys())[stt_index]
-        self.stt_class = stt_mapping.get(stt_type)
 
+        #   Select the STT type:
+        if (model is not None):
+            self.stt_class  = stt_mapping.get(model)
+        else:
+            print("Select the STT type:")
+            for i, stt in enumerate(stt_mapping.keys(), start=1):
+                print(f"{i}. {stt}")
+            stt_index = int(input("Enter the number of your choice: ")) - 1
+            stt_type = list(stt_mapping.keys())[stt_index]
+            self.stt_class = stt_mapping.get(stt_type)
+        
         if self.stt_class is None:
             raise ValueError(f'Invalid stt type: {stt_type}')
-        
+            
         if self.stt_class == self.whisper:
             # Can choose another model (https://github.com/openai/whisper)
             self.model = whisper.load_model('small.en', device=device)
