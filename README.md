@@ -3,6 +3,7 @@
 LIVE-CHAT is a voice-based conversational assistant application that uses Speech-to-Text (STT), Large Language Models (LLMs) and Text-to-Speech (TTS) to chat in your terminal. It's designed to simulate a live conversation with short, conversational responses. Now with enhanced TTS speaker selection and Language Model (LLM) selection features.
 
 [![LIVE-CHAT EXAMPLE VIDEO](https://img.youtube.com/vi/lbuBaKFx5_Q/0.jpg)](https://www.youtube.com/watch?v=lbuBaKFx5_Q)
+
 Example Video 👆
 
 ## Features
