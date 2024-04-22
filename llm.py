@@ -27,8 +27,8 @@ class LanguageModelProcessor:
             'openai': ChatOpenAI 
         }
         model_names = {
-            'ollama': ['mixtral', 'gemma', 'mistral'],
-            'groq': ['gemma-7b-it', 'llama2-70b-4096', 'mixtral-8x7b-32768'],
+            'ollama': ['llama3:8b', 'mixtral', 'gemma', 'mistral',],
+            'groq': ['llama3-70b-8192', 'llama2-70b-4096', 'mixtral-8x7b-32768', 'gemma-7b-it'],
             'openai': ['gpt-4-turbo-preview', 'gpt-3.5-turbo']
         }
 
@@ -67,7 +67,7 @@ class LanguageModelProcessor:
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
         # Load the system prompt from a file
-        with open('system_prompt.txt', 'r') as file:
+        with open('system_prompt1.txt', 'r') as file:
             system_prompt = file.read().strip()
         
         self.prompt = ChatPromptTemplate.from_messages([
