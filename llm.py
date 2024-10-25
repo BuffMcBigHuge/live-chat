@@ -28,8 +28,8 @@ class LanguageModelProcessor:
         }
         model_names = {
             'ollama': ['llama3.1:latest'],
-            'groq': ['llama3-70b-8192', 'llama2-70b-4096', 'mixtral-8x7b-32768', 'gemma-7b-it'],
-            'openai': ['gpt-4-turbo-preview', 'gpt-3.5-turbo']
+            'groq': ['llama-3.1-8b-instant', 'llama-3.1-70b-versatile'],
+            'openai': ['gpt-4o', 'gpt-4o-mini']
         }
 
         #  Select the LLM type:
@@ -67,7 +67,7 @@ class LanguageModelProcessor:
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
         # Load the system prompt from a file
-        with open('system_prompt1.txt', 'r') as file:
+        with open('system_prompt.txt', 'r') as file:
             system_prompt = file.read().strip()
         
         self.prompt = ChatPromptTemplate.from_messages([
