@@ -69,7 +69,7 @@ class SpeechToText:
             
         if self.stt_class == self.whisper:
             # Can choose another model (https://github.com/openai/whisper)
-            self.model = whisper.load_model('small.en', device=device)
+            self.model = whisper.load_model('turbo', device=device)
         
     async def process(self, callback):
         await self.stt_class(callback)

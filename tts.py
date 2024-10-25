@@ -6,21 +6,41 @@ import requests
 import time
 import torch
 import subprocess
-import wave
-import io
 import numpy as np
 import threading
+import re
+import sys
+
+# Add .\venv\Lib\site-packages\f5_tts
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'F5-TTS')):
+    subprocess.run(
+    [
+        "git", "clone", "--depth", "1",
+        "https://github.com/SWivid/F5-TTS",
+        "F5-TTS"
+    ],
+    cwd=os.path.dirname(__file__)
+    )
+sys.path.append(os.path.join(os.path.dirname(__file__), 'F5-TTS', 'src'))
+from f5_tts.model import DiT
+from f5_tts.infer.utils_infer import (
+    load_model,
+    preprocess_ref_audio_text,
+    infer_process,
+)
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base')):
+    # Download model file
+    os.makedirs(os.path.dirname(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base')), exist_ok=True)
+    url = 'https://huggingface.co/SWivid/F5-TTS/resolve/main/F5TTS_Base/model_1200000.safetensors?download=true'
+    response = requests.get(url)
+    with open(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base/model_1200000.safetensors'), 'wb') as f:
+        f.write(response.content)
 
 from pydub.playback import play
 from pydub import AudioSegment
 from dotenv import load_dotenv
 
 import edge_tts
-from TTS.api import TTS
-
-# import queue
-# from TTS.tts.configs.xtts_config import XttsConfig
-# from TTS.tts.models.xtts import Xtts
 
 load_dotenv()
 
@@ -28,21 +48,20 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 class TextToSpeech:
     language = 'en'
-    speaker_wav = None
     tts_class = None
-    tts = None
     voice = None
-    '''
-    chunk_arrival_times = []  # To track arrival times of chunks
-    buffer_size = 5
-    chunks_queue = queue.Queue()
-    '''
+    voice_ref_audio = None
+    voice_ref_text = None
+    model = None
+
+    # Add a threading lock for audio playback
+    audio_lock = threading.Lock()
 
     def __init__(self, model=None, voice=None):
         tts_mapping = {
             'deepgram': self.deepgramTTS,
             'edgeTTS': self.edgeTTS,
-            'coquiTTS': self.coquiTTS
+            'f5TTS': self.f5TTS
         }
 
         # Select the TTS model
@@ -66,8 +85,8 @@ class TextToSpeech:
             asyncio.run(self.select_deepgramTTS_voice())
         elif self.tts_class == self.edgeTTS:
             asyncio.run(self.select_edgeTTS_voice())
-        elif self.tts_class == self.coquiTTS:
-            asyncio.run(self.select_coquiTTS_voice())
+        elif self.tts_class == self.f5TTS:
+            asyncio.run(self.select_f5TTS_voice())
 
     async def select_edgeTTS_voice(self):
         voices = await edge_tts.list_voices()
@@ -88,41 +107,7 @@ class TextToSpeech:
                 print("Invalid input. Please enter a number.")
 
         self.voice = english_voices[voice_index]['ShortName']
-
-    async def select_coquiTTS_voice(self):
-        # Get a list of .wav files in the ./voices directory
-        voices = [f for f in os.listdir('./voices') if f.endswith('.wav')]
-        if not voices:
-            raise ValueError("No .wav files found in the ./voices directory.")
-
-        print("Select the voice:")
-        for i, voice in enumerate(voices, start=1):
-            print(f"{i}. {voice}")
-        
-        while True:
-            try:
-                voice_index = int(input("Enter the number of your choice: ")) - 1
-                if voice_index < 0 or voice_index >= len(voices):
-                    print("Invalid choice. Please enter a number corresponding to the list of voices.")
-                else:
-                    break
-            except ValueError:
-                print("Invalid input. Please enter a number.")
-                
-        self.voice = os.path.join('./voices', voices[voice_index])
-        
-        # Init tts model
-        self.tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", gpu=device=='cuda').to(device)
-        
-        '''
-        config = XttsConfig()
-        config.load_json("./XTTS-v2/config.json")
-        self.model = Xtts.init_from_config(config)
-        self.model.load_checkpoint(config, checkpoint_dir="./XTTS-v2/", use_deepspeed=False)
-        # self.model.cuda()
-        self.gpt_cond_latent, self.speaker_embedding = self.model.get_conditioning_latents(audio_path=[self.voice])
-        '''
-
+    
     async def select_deepgramTTS_voice(self):
         voices = [
             "aura-asteria-en",
@@ -154,7 +139,39 @@ class TextToSpeech:
                 print("Invalid input. Please enter a number.")
 
         self.voice = voices[voice_index]
+    
+    async def select_f5TTS_voice(self):
+        # Select the voice
+        self.voice = self.select_local_voice()
         
+        # Ensure preprocess_ref_audio_text returns exactly two elements
+        ref_audio, ref_text = preprocess_ref_audio_text(
+            './voices/' + self.voice,
+            "",
+            device=device
+        )
+
+        print(f"Ref audio: {ref_audio}")
+        print(f"Ref text: {ref_text}")
+        
+        # Assign the correct values
+        self.voice_ref_audio = ref_audio
+        self.voice_ref_text = ref_text
+
+        # Load F5TTS model
+        model_cls = DiT
+        model_cfg = dict(
+            dim=1024, depth=22, heads=16,
+            ff_mult=2, text_dim=512, conv_layers=4
+        )
+        ckpt_file = str('./models/F5TTS_Base/model_1200000.safetensors')
+        vocab_file = os.path.join('./F5-TTS/data/Emilia_ZH_EN_pinyin/vocab.txt')
+        
+        # Ensure the model is loaded correctly
+        self.model = load_model(model_cls, model_cfg, ckpt_file, vocab_file)
+        if self.model is None:
+            raise ValueError("Failed to load the F5TTS model.")
+
     async def process(self, text):
         await self.tts_class(text)
 
@@ -162,6 +179,30 @@ class TextToSpeech:
     def is_installed(lib_name: str) -> bool:
         lib = shutil.which(lib_name)
         return lib is not None
+
+    def select_local_voice(self):
+        # Get a list of .wav files in the ./voices directory
+        voices = [f for f in os.listdir('./voices') if f.endswith('.wav')]
+        if not voices:
+            raise ValueError("No .wav files found in the ./voices directory.")
+
+        print("Select the voice:")
+        for i, voice in enumerate(voices, start=1):
+            print(f"{i}. {voice}")
+        
+        while True:
+            try:
+                voice_index = int(input("Enter the number of your choice: ")) - 1
+                if voice_index < 0 or voice_index >= len(voices):
+                    print("Invalid choice. Please enter a number corresponding to the list of voices.")
+                else:
+                    break
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        print(f"Selected voice: {voices[voice_index]}")
+
+        return voices[voice_index]
 
     async def deepgramTTS(self, text):
         if not self.is_installed("ffplay"):
@@ -177,26 +218,28 @@ class TextToSpeech:
         }
 
         player_command = ["ffplay", "-autoexit", "-", "-nodisp"]
-        player_process = subprocess.Popen(
-            player_command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
 
-        start_time = time.time()  # Record the time before sending the request
+        with self.audio_lock:  # Ensure only one audio plays at a time
+            player_process = subprocess.Popen(
+                player_command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        with requests.post(DEEPGRAM_URL, stream=True, headers=headers, json=payload) as r:
-            if r.status_code != 200:
-                raise ValueError(f"Request to Deepgram API failed with status code {r.status_code}. \n\n{r.text}")
-            for chunk in r.iter_content(chunk_size=1024):
-                if chunk:                        
-                    player_process.stdin.write(chunk)
-                    player_process.stdin.flush()
+            start_time = time.time()  # Record the time before sending the request
 
-        if player_process.stdin:
-            player_process.stdin.close()
-        player_process.wait()
+            with requests.post(DEEPGRAM_URL, stream=True, headers=headers, json=payload) as r:
+                if r.status_code != 200:
+                    raise ValueError(f"Request to Deepgram API failed with status code {r.status_code}. \n\n{r.text}")
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:                        
+                        player_process.stdin.write(chunk)
+                        player_process.stdin.flush()
+
+            if player_process.stdin:
+                player_process.stdin.close()
+            player_process.wait()
 
         end_time = time.time()
         elapsed_time = int((end_time - start_time) * 1000)
@@ -209,197 +252,77 @@ class TextToSpeech:
         start_time = time.time()
 
         player_command = ["ffplay", "-autoexit", "-", "-nodisp"]
-        player_process = subprocess.Popen(
-            player_command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
 
-        start_time = time.time()
+        with self.audio_lock:  # Ensure only one audio plays at a time
+            player_process = subprocess.Popen(
+                player_command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        communicate = edge_tts.Communicate(text, self.voice).stream()
+            communicate = edge_tts.Communicate(text, self.voice).stream()
 
-        async for chunk in communicate:
-            if chunk['type'] == 'audio':
-                player_process.stdin.write(chunk['data'])
-                player_process.stdin.flush()
+            async for chunk in communicate:
+                if chunk['type'] == 'audio':
+                    player_process.stdin.write(chunk['data'])
+                    player_process.stdin.flush()
 
-        if player_process.stdin:
-            player_process.stdin.close()
-        player_process.wait()
-
-        end_time = time.time()
-        elapsed_time = int((end_time - start_time) * 1000)
-        print(f">> TTS ({elapsed_time}ms)")
-
-    async def coquiTTS(self, text):
-        start_time = time.time()
-
-        '''
-        if not self.is_installed("ffplay"):
-            raise ValueError("ffplay not found, necessary to stream audio.")
-        player_command = ["ffplay", "-f", "s16le", "-ar", "24000", "-ac", "1", "-nodisp", "-"]
-        # player_command = ["ffplay", "-autoexit", "-nodisp", "-"]  
-        player_process = subprocess.Popen(
-            player_command, 
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
-        '''
-
-        '''
-        chunks = self.model.inference_stream(
-            text,
-            "en",
-            self.gpt_cond_latent,
-            self.speaker_embedding,
-            enable_text_splitting=True,
-            stream_chunk_size=20,
-        )
-        '''
-
-        ''' SAVE CHUNKS TO FILE
-        wav_chuncks = []
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                print(f"Time to first chunck: {time.time() - t0}")
-            print(f"Received chunk {i} of audio length {chunk.shape[-1]}")
-            wav_chuncks.append(chunk)
-        wav = torch.cat(wav_chuncks, dim=0)
-        torchaudio.save("xtts_streaming.wav", wav.squeeze().unsqueeze(0).cpu(), 24000)
-        '''
-
-        '''
-        threading.Thread(target=self.play_audio)
-
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                print(f"Time to first chunk: {time.time() - start_time}")
-
-            # Record the arrival time of the chunk
-            self.chunk_arrival_times.append(time.time())
-            
-            print(f"Received chunk {i} of audio length {chunk.shape[-1]}")
-
-            if isinstance(chunk, list):
-                chunk = torch.cat(chunk, dim=0)
-            chunk = chunk.clone().detach().cpu().numpy()
-            chunk = np.clip(chunk, -1, 1)
-            chunk = (chunk * 32767).astype(np.int16)  # Convert to 16-bit PCM
-
-            # Convert numpy array to audio
-            audio = AudioSegment(chunk.tobytes(), 
-                         frame_rate=24000,
-                         sample_width=chunk.dtype.itemsize, 
-                         channels=1)
-
-            self.chunks_queue.put(audio)
-
-            # Dynamically adjust buffer size based on the speed chunks are coming in
-            self.update_buffer_size_based_on_arrival_rate()
-
-            # Write the chunk's bytes to ffplay's stdin directly without calling .read()
-            # player_process.stdin.write(chunk.tobytes())
-            # player_process.stdin.flush()
-        
-        # Wait for all chunks to be played
-        while not self.chunks_queue.empty():
-            time.sleep(0.1)  # Prevent this loop from using 100% CPU
-        
-        end_time = time.time()
-        elapsed_time = int((end_time - start_time) * 1000)
-        print(f">> TTS ({elapsed_time}ms)")
-        '''
-        
-        '''
-        # if player_process.stdin:
-        #     player_process.stdin.close()
-        # player_process.wait()
-        '''
-
-        tts_output = self.tts.tts(
-            text=text, 
-            speaker_wav=self.voice,
-            language=self.language)
-        
-        tts_output_array = np.array(tts_output)
-        int_data = np.int16(tts_output_array * 32767)
-
-        # Create a WAV file in memory
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wave_file:
-            wave_file.setnchannels(1)  # Mono
-            wave_file.setsampwidth(2)  # 16 bits per sample
-            wave_file.setframerate(24000)  # Example sample rate
-            wave_file.writeframes(int_data.tobytes())
-        buffer.seek(0)  # Important: rewind the buffer to the beginning
-        audio_segment = AudioSegment.from_wav(buffer)
-        
-        # Play Audio in threading using pydub
-        threading.Thread(target=lambda: self.play_audio(audio_segment)).start()
+            if player_process.stdin:
+                player_process.stdin.close()
+            player_process.wait()
 
         end_time = time.time()
         elapsed_time = int((end_time - start_time) * 1000)
         print(f">> TTS ({elapsed_time}ms)")
 
-        '''
-        # Write the WAV file's bytes to ffplay's stdin
-        buffer.seek(0)  # Go to the beginning of the WAV file in memory
-        player_process.stdin.write(buffer.read())
-        player_process.stdin.flush()
+    async def f5TTS(self, text):
+        frame_rate = 44100
+        generated_audio_segments = []
+        reg1 = r"(?=\[\w+\])"
+        chunks = re.split(reg1, text)
+        reg2 = r"\[(\w+)\]"
 
-        if player_process.stdin:
-            player_process.stdin.close()
-        player_process.wait()
-        '''
+        for text in chunks:
+            text = re.sub(reg2, "", text)
+            gen_text = text.strip()
 
-    def play_audio(self, wave_file):
-        # Play the audio
-        play(wave_file)
-    
-    '''
-    def play_audio_chunks(self):
-        while True:
-            try:
-                # Wait until the buffer size is reached
-                while self.chunks_queue.qsize() < self.buffer_size:
-                    time.sleep(0.1)  # Prevent this loop from using 100% CPU
+            audio, final_sample_rate, _ = infer_process(
+                self.voice_ref_audio, self.voice_ref_text, gen_text, self.model, device=device,
+            )
+            generated_audio_segments.append(audio)
+            frame_rate = final_sample_rate
 
-                # Get the next chunk from the queue
-                chunk = self.chunks_queue.get()
+        if generated_audio_segments:
+            final_wave = np.concatenate(generated_audio_segments, axis=0)
 
-                # Convert the chunk to an AudioSegment
-                audio = AudioSegment(
-                    data=chunk.raw_data,
-                    sample_width=chunk.sample_width,
-                    frame_rate=chunk.frame_rate,
-                    channels=chunk.channels
-                )
+        # Normalize the audio to prevent clipping
+        max_val = np.max(np.abs(final_wave))
+        if max_val > 0:
+            final_wave = final_wave / max_val
 
-                # Play the audio
-                play(audio)
+        # Convert the normalized audio to int16
+        final_wave = (final_wave * 32767).astype(np.int16)
 
-            except queue.Empty:
-                # If the queue is empty, break the loop
-                break
-    
-    def update_buffer_size_based_on_arrival_rate(self):
-        if len(self.chunk_arrival_times) < 2:
-            return  # Need at least two chunks to calculate a rate
+        # Calculate the correct sample width
+        sample_width = final_wave.dtype.itemsize
 
-        # Calculate average arrival time between chunks
-        arrival_diffs = [self.chunk_arrival_times[i] - self.chunk_arrival_times[i - 1] for i in range(1, len(self.chunk_arrival_times))]
-        average_arrival_time = sum(arrival_diffs) / len(arrival_diffs)
+        # Convert the NumPy array to an AudioSegment
+        audio_segment = AudioSegment(
+            final_wave.tobytes(),
+            frame_rate=frame_rate,
+            sample_width=sample_width,  # Use the calculated sample width
+            channels=1  # Ensure mono audio if that's the intended format
+        )
 
-        # Adjust buffer size based on average arrival time
-        # This is a simplified example; you may want to refine how the buffer size is calculated
-        new_buffer_size = max(1, int(average_arrival_time * 2))  # Example adjustment
+        # Adjust the volume if necessary
+        audio_segment = audio_segment - 10  # Reduce volume by 10 dB
 
-        print(f"Average arrival time: {average_arrival_time} seconds")
-        print(f"New buffer size: {new_buffer_size}")
+        # Play the audio directly within the lock
+        with self.audio_lock:  # Ensure only one audio plays at a time
+            play(audio_segment)
 
-        # Set the new buffer size
-        self.buffer_size = new_buffer_size
-    '''
+        try:
+            pass
+        except Exception as e:
+            print(f"F5TTS inference failed: {str(e)}")

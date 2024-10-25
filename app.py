@@ -1,6 +1,11 @@
 import asyncio
 import os
 import time
+import warnings
+
+# Suppress FutureWarning messages
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
 from dotenv import load_dotenv
 from llm import LanguageModelProcessor
 from tts import TextToSpeech
@@ -15,9 +20,10 @@ class ConversationManager:
     stt = SpeechToText()
     llm = LanguageModelProcessor()
     tts = TextToSpeech()
+
     # stt = SpeechToText(model='whisper')
-    # llm = LanguageModelProcessor(type='groq', model='mixtral-8x7b-32768')
-    # tts = TextToSpeech(model='edgeTTS', voice='en-IE-EmilyNeural')
+    # llm = LanguageModelProcessor(type='ollama', model='llama:3.1:latest')
+    # tts = TextToSpeech(model='f5TTS')
 
     def __init__(self):
         pass

@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import (
     ChatPromptTemplate,
@@ -27,7 +27,7 @@ class LanguageModelProcessor:
             'openai': ChatOpenAI 
         }
         model_names = {
-            'ollama': ['llama3:8b', 'mixtral', 'gemma', 'mistral',],
+            'ollama': ['llama3.1:latest'],
             'groq': ['llama3-70b-8192', 'llama2-70b-4096', 'mixtral-8x7b-32768', 'gemma-7b-it'],
             'openai': ['gpt-4-turbo-preview', 'gpt-3.5-turbo']
         }
