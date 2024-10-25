@@ -10,3 +10,14 @@ PyAudio
 pydub
 python-dotenv
 sounddevice
+torchdiffeq
+x_transformers
+jieba
+pypinyin
+wandb
+accelerate
+ema_pytorch
+datasets
+matplotlib
+transformers
+vocos

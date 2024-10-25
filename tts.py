@@ -13,6 +13,7 @@ import sys
 
 # Add .\venv\Lib\site-packages\f5_tts
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'F5-TTS')):
+    print("Cloning F5-TTS repository...")
     subprocess.run(
     [
         "git", "clone", "--depth", "1",
@@ -30,7 +31,8 @@ from f5_tts.infer.utils_infer import (
 )
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base')):
     # Download model file
-    os.makedirs(os.path.dirname(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base')), exist_ok=True)
+    print("Downloading F5-TTS model file...")
+    os.makedirs(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base'), exist_ok=True)
     url = 'https://huggingface.co/SWivid/F5-TTS/resolve/main/F5TTS_Base/model_1200000.safetensors?download=true'
     response = requests.get(url)
     with open(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base/model_1200000.safetensors'), 'wb') as f:
