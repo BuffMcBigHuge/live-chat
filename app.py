@@ -17,16 +17,21 @@ class ConversationManager:
     transcription_response = ""
 
     # Init
-    stt = SpeechToText()
-    llm = LanguageModelProcessor()
-    tts = TextToSpeech()
+    # stt = SpeechToText()
+    # llm = LanguageModelProcessor()
+    # tts = TextToSpeech()
 
-    # stt = SpeechToText(model='whisper')
-    # llm = LanguageModelProcessor(type='ollama', model='llama:3.1:latest')
-    # tts = TextToSpeech(model='f5TTS')
+    stt = SpeechToText(model='whisper')
+    llm = LanguageModelProcessor(type='ollama')
+    tts = TextToSpeech(model='f5TTS')
 
     def __init__(self):
-        pass
+        self.tts_playing = False
+
+    async def stop_tts(self):
+        if self.tts_playing:
+            self.tts.stop_playback()  # Assuming you add a stop_playback method in TTS
+            self.tts_playing = False
 
     async def main(self):
         def handle_full_sentence(full_sentence):
@@ -35,21 +40,26 @@ class ConversationManager:
         # Init
         llm_response = self.llm.process('Hello! Who are you?')
         await self.tts.process(text=llm_response)
+        self.tts_playing = True
 
         while True:
             # Listening with STT
             await self.stt.process(handle_full_sentence)
 
-            if "goodbye" in self.transcription_response.lower():
-                break
+            if self.transcription_response:
+                await self.stop_tts()  # Stop TTS if new speech is detected
 
-            # Processing with LLM
-            llm_response = self.llm.process(self.transcription_response)
+                if "goodbye" in self.transcription_response.lower():
+                    break
 
-            # Speaking with TTS
-            await self.tts.process(text=llm_response)
+                # Processing with LLM
+                llm_response = self.llm.process(self.transcription_response)
 
-            self.transcription_response = ""
+                # Speaking with TTS
+                await self.tts.process(text=llm_response)
+                self.tts_playing = True
+
+                self.transcription_response = ""
 
 if __name__ == "__main__":
     print(f'Running ConversationManager...')

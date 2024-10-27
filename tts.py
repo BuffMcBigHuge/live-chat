@@ -228,6 +228,7 @@ class TextToSpeech:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self.player_process = player_process  # Store the process for stopping
 
             start_time = time.time()  # Record the time before sending the request
 
@@ -262,6 +263,7 @@ class TextToSpeech:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self.player_process = player_process  # Store the process for stopping
 
             communicate = edge_tts.Communicate(text, self.voice).stream()
 
@@ -323,8 +325,15 @@ class TextToSpeech:
         # Play the audio directly within the lock
         with self.audio_lock:  # Ensure only one audio plays at a time
             play(audio_segment)
+            self.audio_segment = audio_segment  # Store the segment for stopping
 
         try:
             pass
         except Exception as e:
             print(f"F5TTS inference failed: {str(e)}")
+
+    def stop_playback(self):
+        # Implement logic to stop the audio playback
+        # This could involve terminating the subprocess or stopping the audio stream
+        pass
+
