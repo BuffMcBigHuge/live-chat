@@ -14,6 +14,9 @@ from langchain.prompts import (
     HumanMessagePromptTemplate,
 )
 from langchain.chains import LLMChain
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import START, MessagesState, StateGraph
 
 load_dotenv()
 
@@ -22,6 +25,11 @@ load_dotenv()
 class LanguageModelProcessor:
     model_type = None
     model_name = None
+    memory = None
+    workflow = None
+    app = None
+    llm = None
+    memory = None
      
     def __init__(self, type=None, model=None):
         llm_mapping = { 
@@ -70,36 +78,49 @@ class LanguageModelProcessor:
         # Debugging: Print model_type and model_name
         print(f"Model Type: {model_type}, Model Name: {model_name}")
 
-        # Create the LLM
-        if model_type == 'ollama':
-            if model_name is None:
-                raise ValueError("Model name for 'ollama' cannot be None")
-            self.llm = llm_class(model=model_name, base_url=os.getenv("OLLAMA_BASE_URL"))
-        elif model_type == 'groq':
-            self.llm = llm_class(temperature=0, model_name=model_name, groq_api_key=os.getenv("GROQ_API_KEY"))
-        elif model_type == 'openai':
-            self.llm = llm_class(temperature=0, model_name=model_name, openai_api_key=os.getenv("OPENAI_API_KEY"))
+        # Initialize the chat model
+        self.llm = llm_class(model=model_name, base_url=os.getenv("OLLAMA_BASE_URL")) if model_type == 'ollama' else \
+                   llm_class(temperature=0, model_name=model_name, groq_api_key=os.getenv("GROQ_API_KEY")) if model_type == 'groq' else \
+                   llm_class(temperature=0, model_name=model_name, openai_api_key=os.getenv("OPENAI_API_KEY"))
 
-        self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        # Define the graph state to be a list of messages
+        self.workflow = StateGraph(state_schema=MessagesState)
+
+        # Define the function that calls the model
+        def call_model(state: MessagesState):
+            response = self.llm.invoke(state["messages"])
+            return {"messages": response}
+
+        # Define the (single) node in the graph
+        self.workflow.add_edge(START, "model")
+        self.workflow.add_node("model", call_model)
+
+        # Add memory
+        self.memory = MemorySaver()
+        self.app = self.workflow.compile(checkpointer=self.memory)
 
         # Load the system prompt from a file
         with open('system_prompt1.txt', 'r') as file:
             system_prompt = file.read().strip()
-        
+
+        system_message = SystemMessage(system_prompt)
+
+        config = {"configurable": {"thread_id": "default_thread"}}
+        self.app.update_state(config, {"messages": [system_message]})
+
+        '''
         self.prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
             HumanMessagePromptTemplate.from_template("{text}")
         ])
 
-        print(self.prompt)
-        print(self.memory)
-
         self.conversation = LLMChain(
             llm=self.llm,
             prompt=self.prompt,
             memory=self.memory
         )
+        '''
 
     def fetch_ollama_models(self):
         try:
@@ -113,16 +134,14 @@ class LanguageModelProcessor:
             return []
 
     def process(self, text):
-        self.memory.chat_memory.add_user_message(text)  # Add user message to memory
+        # Prepare input messages
+        input_messages = [HumanMessage(text)]
+        config = {"configurable": {"thread_id": "default_thread"}}
 
-        start_time = time.time()
+        # Invoke the application
+        output = self.app.invoke({"messages": input_messages}, config)
+        response_message = output["messages"][-1]
 
-        # Go get the response from the LLM
-        response = self.conversation.invoke({"text": text})
-        end_time = time.time()
-
-        self.memory.chat_memory.add_ai_message(response['text'])  # Add AI response to memory
-
-        elapsed_time = int((end_time - start_time) * 1000)
-        print(f">> LLM ({elapsed_time}ms): {response['text']}")
-        return response['text']
+        # Print the response
+        print(f">> LLM: {response_message.pretty_print()}")
+        return response_message.content
