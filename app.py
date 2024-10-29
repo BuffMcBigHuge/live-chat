@@ -27,6 +27,8 @@ class ConversationManager:
 
     def __init__(self):
         self.tts_playing = False
+        self.transcription_response = ""
+        self.response_received = asyncio.Event()
 
     async def stop_tts(self):
         if self.tts_playing:
@@ -36,15 +38,15 @@ class ConversationManager:
     async def main(self):
         def handle_full_sentence(full_sentence):
             self.transcription_response = full_sentence
-
-        # Init
-        llm_response = self.llm.process('Hello! Who are you?')
-        await self.tts.process(text=llm_response)
-        self.tts_playing = True
+            self.response_received.set()
 
         while True:
+            self.response_received.clear()
             # Listening with STT
             await self.stt.process(handle_full_sentence)
+            
+            # Wait for the response to be set
+            await self.response_received.wait()
 
             if self.transcription_response:
                 await self.stop_tts()  # Stop TTS if new speech is detected

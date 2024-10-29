@@ -58,6 +58,9 @@ class TextToSpeech:
 
     # Add a threading lock for audio playback
     audio_lock = threading.Lock()
+    audio_queue = asyncio.Queue()  # Add queue for audio segments
+    is_playing = False
+    play_task = None
 
     def __init__(self, model=None, voice=None):
         tts_mapping = {
@@ -280,55 +283,84 @@ class TextToSpeech:
         elapsed_time = int((end_time - start_time) * 1000)
         print(f">> TTS ({elapsed_time}ms)")
 
-    async def f5TTS(self, text):
-        frame_rate = 44100
-        generated_audio_segments = []
-        reg1 = r"(?=\[\w+\])"
-        chunks = re.split(reg1, text)
-        reg2 = r"\[(\w+)\]"
+    async def play_queue(self):
+        while True:
+            if not self.is_playing and not self.audio_queue.empty():
+                audio_segment = await self.audio_queue.get()
+                self.is_playing = True
+                with self.audio_lock:
+                    play(audio_segment)
+                self.is_playing = False
+            await asyncio.sleep(0.1)
 
-        for text in chunks:
-            text = re.sub(reg2, "", text)
-            gen_text = text.strip()
+    async def process_chunk(self, text):
+        """Process a single chunk of text into audio"""
+        if not text.strip():  # Skip empty chunks
+            return
+        
+        print(text)
 
-            audio, final_sample_rate, _ = infer_process(
-                self.voice_ref_audio, self.voice_ref_text, gen_text, self.model, device=device,
-            )
-            generated_audio_segments.append(audio)
-            frame_rate = final_sample_rate
+        audio, final_sample_rate, _ = infer_process(
+            self.voice_ref_audio, self.voice_ref_text, text, self.model, device=device,
+        )
 
-        if generated_audio_segments:
-            final_wave = np.concatenate(generated_audio_segments, axis=0)
-
-        # Normalize the audio to prevent clipping
+        # Process audio
+        final_wave = audio
         max_val = np.max(np.abs(final_wave))
         if max_val > 0:
             final_wave = final_wave / max_val
 
-        # Convert the normalized audio to int16
         final_wave = (final_wave * 32767).astype(np.int16)
-
-        # Calculate the correct sample width
         sample_width = final_wave.dtype.itemsize
 
-        # Convert the NumPy array to an AudioSegment
+        # Convert to AudioSegment
         audio_segment = AudioSegment(
             final_wave.tobytes(),
-            frame_rate=frame_rate,
-            sample_width=sample_width,  # Use the calculated sample width
-            channels=1  # Ensure mono audio if that's the intended format
+            frame_rate=final_sample_rate,
+            sample_width=sample_width,
+            channels=1
         )
+        audio_segment = audio_segment - 10  # Reduce volume
 
-        # Adjust the volume if necessary
-        audio_segment = audio_segment - 10  # Reduce volume by 10 dB
+        await self.audio_queue.put(audio_segment)
 
-        # Play the audio directly within the lock
-        with self.audio_lock:  # Ensure only one audio plays at a time
-            play(audio_segment)
-            self.audio_segment = audio_segment  # Store the segment for stopping
+    async def f5TTS(self, text):
+        # Start the queue player if not already running
+        if not self.play_task:
+            self.play_task = asyncio.create_task(self.play_queue())
+
+        # Split text into chunks at punctuation, aiming for ~50 characters per chunk
+        def chunk_text(text, target_length=50):
+            chunks = []
+            current_chunk = ""
+            
+            # Split at sentence boundaries first
+            sentences = re.split(r'([.,;?!-])', text)
+            
+            for i in range(0, len(sentences), 2):
+                part = sentences[i]
+                punctuation = sentences[i + 1] if i + 1 < len(sentences) else ""
+                
+                if len(current_chunk) + len(part) + 1 <= target_length:
+                    current_chunk += part + punctuation
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = part + punctuation
+            
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                
+            return [chunk for chunk in chunks if chunk.strip()]
+
+        chunks = chunk_text(text)
 
         try:
-            pass
+            # Create tasks for all chunks to process them concurrently
+            tasks = [self.process_chunk(chunk) for chunk in chunks if chunk]
+            # Wait for all chunks to be processed
+            await asyncio.gather(*tasks)
+
         except Exception as e:
             print(f"F5TTS inference failed: {str(e)}")
 

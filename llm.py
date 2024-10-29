@@ -62,8 +62,6 @@ class LanguageModelProcessor:
         if model_type == 'ollama':
             # Fetch model names dynamically
             ollama_models = self.fetch_ollama_models()
-            print(f"Fetched Ollama Models: {ollama_models}")  # Debugging line
-
             # Update the model_names dictionary with the fetched models
             model_names['ollama'] = ollama_models if ollama_models else ['default_model_name']
         
@@ -143,5 +141,5 @@ class LanguageModelProcessor:
         response_message = output["messages"][-1]
 
         # Print the response
-        print(f">> LLM: {response_message.pretty_print()}")
+        # print(f">> LLM: {response_message.pretty_print()}")
         return response_message.content

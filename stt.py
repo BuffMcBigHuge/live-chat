@@ -1,13 +1,6 @@
 import asyncio
 import os
 import time
-from dotenv import load_dotenv
-import torch
-import sounddevice as sd
-import numpy as np
-import whisper
-import threading
-
 from deepgram import (
     DeepgramClient,
     DeepgramClientOptions,
@@ -16,12 +9,20 @@ from deepgram import (
     Microphone,
 )
 
+from dotenv import load_dotenv
+import torch
+import sounddevice as sd
+import numpy as np
+from faster_whisper import WhisperModel
+import requests
+from whisper_online import FasterWhisperASR, OnlineASRProcessor
+
 load_dotenv()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-BLOCKSIZE=16000
-SAMPLE_RATE=16000
+BLOCKSIZE = 16000
+SAMPLE_RATE = 16000
 
 class TranscriptCollector:
     def __init__(self):
@@ -35,16 +36,10 @@ class TranscriptCollector:
 
     def get_full_transcript(self):
         return ' '.join(self.transcript_parts)
-    
+
 transcript_collector = TranscriptCollector()
 
 class SpeechToText:
-    global_ndarray = None
-    silence_threshold=400 # should be set to the lowest sample amplitude that the speech in the audio material has
-    silence_ratio=50 # number of samples in one buffer that are allowed to be higher than threshold
-    no_speech_threshold=0.1
-    silence_duration_threshold = 1  # seconds of silence before processing
-    silence_counter = 0  # counter for continuous silence
     model = None
 
     def __init__(self, model=None):
@@ -53,9 +48,8 @@ class SpeechToText:
             'whisper': self.whisper
         }
 
-        #   Select the STT type:
-        if (model is not None):
-            self.stt_class  = stt_mapping.get(model)
+        if model is not None:
+            self.stt_class = stt_mapping.get(model)
         else:
             print("Select the STT type:")
             for i, stt in enumerate(stt_mapping.keys(), start=1):
@@ -68,41 +62,86 @@ class SpeechToText:
             raise ValueError(f'Invalid stt type: {stt_type}')
             
         if self.stt_class == self.whisper:
-            # Can choose another model (https://github.com/openai/whisper)
-            self.model = whisper.load_model('turbo', device=device)
-        
-    async def process(self, callback):
-        await self.stt_class(callback)
+            # Initialize the whisper streaming model
+            self.asr = FasterWhisperASR("en", "large-v3")
+            self.online_processor = OnlineASRProcessor(self.asr)
 
+    async def process(self, callback):
+       await self.stt_class(callback)
+
+    async def whisper(self, callback):
+        global transcript_collector
+        main_loop = asyncio.get_running_loop()
+        transcription_complete = asyncio.Event()
+
+        def audio_callback(indata, frames, audiotime, status, **kwargs):
+            try:
+                indata_transformed = indata.flatten().astype(np.float32) / 32768.0
+
+                # Insert audio chunk into the online processor
+                self.online_processor.insert_audio_chunk(indata_transformed)
+                output = self.online_processor.process_iter()
+
+                if isinstance(output, tuple) and len(output) == 3 and isinstance(output[2], str):
+                    full_sentence = output[2]
+
+                    if len(full_sentence.strip()) > 0:
+                        full_sentence = full_sentence.strip()
+                        transcript_collector.add_part(full_sentence)
+                        print(f"Human: {full_sentence}")
+                        
+                        # Execute callback in the main loop
+                        main_loop.call_soon_threadsafe(callback, full_sentence)
+                        
+                        transcript_collector.reset()
+                        transcription_complete.set()
+            except Exception as e:
+                print(f"Error in audio callback: {e}")
+
+        with sd.InputStream(samplerate=SAMPLE_RATE, dtype='int16', channels=1, blocksize=BLOCKSIZE, callback=audio_callback):
+            try:
+                print("Listening...")
+                await transcription_complete.wait()
+            except asyncio.CancelledError:
+                print("Debug: Transcription cancelled")
+                return
+            
     async def deepgram(self, callback):
         global transcript_collector
 
-        transcription_complete = asyncio.Event()  # Event to signal transcription completion
+        transcription_complete = asyncio.Event()
 
         try:
-            # example of setting up a client config. logging values: WARNING, VERBOSE, DEBUG, SPAM
             config = DeepgramClientOptions(options={"keepalive": "true"})
             deepgram: DeepgramClient = DeepgramClient(os.getenv("DEEPGRAM_API_KEY"), config)
 
             dg_connection = deepgram.listen.asynclive.v("1")
-            print ("Listening...")
+            print("Listening...")
 
             async def on_message(self, result, **kwargs):
-                sentence = result.channel.alternatives[0].transcript
-                
-                if not result.speech_final:
-                    transcript_collector.add_part(sentence)
-                else:
-                    # This is the final part of the current sentence
-                    transcript_collector.add_part(sentence)
-                    full_sentence = transcript_collector.get_full_transcript()
-                    # Check if the full_sentence is not empty before printing
-                    if len(full_sentence.strip()) > 0:
-                        full_sentence = full_sentence.strip()
-                        print(f"Human: {full_sentence}")
-                        callback(full_sentence)  # Call the callback with the full_sentence
-                        transcript_collector.reset()
-                        transcription_complete.set()  # Signal to stop transcription and exit
+                try:
+                    sentence = result.channel.alternatives[0].transcript
+                    
+                    if not result.speech_final:
+                        transcript_collector.add_part(sentence)
+                    else:
+                        transcript_collector.add_part(sentence)
+                        full_sentence = transcript_collector.get_full_transcript()
+                        
+                        if len(full_sentence.strip()) > 0:
+                            full_sentence = full_sentence.strip()
+                            print(f"Human: {full_sentence}")
+                            
+                            # Execute callback in the event loop
+                            if asyncio.iscoroutinefunction(callback):
+                                await callback(full_sentence)
+                            else:
+                                callback(full_sentence)
+                                
+                            transcript_collector.reset()
+                            transcription_complete.set()
+                except Exception as e:
+                    print(f"Error in on_message: {e}")
 
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
 
@@ -134,55 +173,3 @@ class SpeechToText:
         except Exception as e:
             print(f"Could not open socket: {e}")
             return
-
-    async def whisper(self, callback):
-        global transcript_collector
-
-        transcription_complete = threading.Event()
-
-        def audio_callback(indata, frames, audiotime, status, **kwargs):            
-            indata_flattened = abs(indata.flatten())
-            
-            # Check if the number of samples above the threshold is less than the ratio
-            if (np.asarray(np.where(indata_flattened > self.silence_threshold)).size < self.silence_ratio):
-                self.silence_counter += 1  # increment the silence counter
-                print(f"Silence {self.silence_counter}...")
-            else:
-                # If the number of samples above the threshold is greater than the ratio, reset the silence counter
-                if (self.global_ndarray is not None):
-                    self.global_ndarray = np.concatenate((self.global_ndarray, indata), dtype='int16')
-                else:
-                    self.global_ndarray = indata
-                
-            # If the silence counter exceeds the silence duration threshold, process the audio
-            if (self.silence_counter > self.silence_duration_threshold * (SAMPLE_RATE / frames) and self.global_ndarray is not None):
-                self.silence_counter = 0
-
-                local_ndarray = self.global_ndarray.copy()
-                self.global_ndarray = None
-                indata_transformed = local_ndarray.flatten().astype(np.float32) / 32768.0
-                indata_transformed_tensor = torch.tensor(indata_transformed)
-
-                start_time = time.time()
-                result = self.model.transcribe(indata_transformed_tensor, language='en', no_speech_threshold=self.no_speech_threshold)
-                end_time = time.time()
-                elapsed_time = int((end_time - start_time) * 1000)
-                print(f">> STT ({elapsed_time}ms)")
-
-                if result['text'] != "":
-                    print(f"Human: {result['text']}")
-                    callback(result['text'])  # Call the callback with the full_sentence
-                    transcript_collector.reset()
-                    transcription_complete.set()  # Signal to stop transcription and exit
-
-                del local_ndarray
-                del indata_flattened
-
-        with sd.InputStream(samplerate=SAMPLE_RATE, dtype='int16', channels=1, blocksize=BLOCKSIZE, callback=audio_callback):
-            try:
-                print("Listening...")
-                transcription_complete.wait()
-                raise sd.CallbackStop
-            except sd.CallbackStop:
-                return
-
