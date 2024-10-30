@@ -55,9 +55,7 @@ class TextToSpeech:
     voice_ref_audio = None
     voice_ref_text = None
     model = None
-
-    # Add a threading lock for audio playback
-    audio_lock = threading.Lock()
+ 
     audio_queue = asyncio.Queue()  # Add queue for audio segments
     is_playing = False
     play_task = None
@@ -224,28 +222,27 @@ class TextToSpeech:
 
         player_command = ["ffplay", "-autoexit", "-", "-nodisp"]
 
-        with self.audio_lock:  # Ensure only one audio plays at a time
-            player_process = subprocess.Popen(
-                player_command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self.player_process = player_process  # Store the process for stopping
+        player_process = subprocess.Popen(
+            player_command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.player_process = player_process  # Store the process for stopping
 
-            start_time = time.time()  # Record the time before sending the request
+        start_time = time.time()  # Record the time before sending the request
 
-            with requests.post(DEEPGRAM_URL, stream=True, headers=headers, json=payload) as r:
-                if r.status_code != 200:
-                    raise ValueError(f"Request to Deepgram API failed with status code {r.status_code}. \n\n{r.text}")
-                for chunk in r.iter_content(chunk_size=1024):
-                    if chunk:                        
-                        player_process.stdin.write(chunk)
-                        player_process.stdin.flush()
+        with requests.post(DEEPGRAM_URL, stream=True, headers=headers, json=payload) as r:
+            if r.status_code != 200:
+                raise ValueError(f"Request to Deepgram API failed with status code {r.status_code}. \n\n{r.text}")
+            for chunk in r.iter_content(chunk_size=1024):
+                if chunk:                        
+                    player_process.stdin.write(chunk)
+                    player_process.stdin.flush()
 
-            if player_process.stdin:
-                player_process.stdin.close()
-            player_process.wait()
+        if player_process.stdin:
+            player_process.stdin.close()
+        player_process.wait()
 
         end_time = time.time()
         elapsed_time = int((end_time - start_time) * 1000)
@@ -328,10 +325,9 @@ class TextToSpeech:
 
     async def f5TTS(self, text):
         # Start the queue player if not already running
-        if not self.play_task:
+        if not self.play_task or self.play_task.done():
             self.play_task = asyncio.create_task(self.play_queue())
 
-        # Split text into chunks at punctuation, aiming for ~50 characters per chunk
         def chunk_text(text, target_length=50):
             chunks = []
             current_chunk = ""
@@ -358,10 +354,18 @@ class TextToSpeech:
         chunks = chunk_text(text)
 
         try:
-            # Process chunks concurrently and enqueue each result immediately
+            # Create tasks for all chunks and process them concurrently
+            tasks = []
             for chunk in chunks:
                 if chunk:
-                    audio_data = await self.process_chunk(chunk)
+                    # Create a task for each chunk processing
+                    task = asyncio.create_task(self.process_chunk(chunk))
+                    tasks.append(task)
+
+            # As each task completes, enqueue its audio data
+            for task in asyncio.as_completed(tasks):
+                audio_data = await task
+                if audio_data:
                     await self.audio_queue.put(audio_data)
 
         except Exception as e:

@@ -61,7 +61,7 @@ class SpeechToText:
             
         if self.stt_class == self.whisper:
             # Initialize the whisper streaming model
-            self.asr = FasterWhisperASR("en", "large-v3")
+            self.asr = FasterWhisperASR("en", "medium.en")
             self.online_processor = OnlineASRProcessor(self.asr)
 
     async def process(self, callback):
