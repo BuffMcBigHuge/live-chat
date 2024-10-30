@@ -13,8 +13,6 @@ from dotenv import load_dotenv
 import torch
 import sounddevice as sd
 import numpy as np
-from faster_whisper import WhisperModel
-import requests
 from whisper_online import FasterWhisperASR, OnlineASRProcessor
 
 load_dotenv()
@@ -74,27 +72,35 @@ class SpeechToText:
         main_loop = asyncio.get_running_loop()
         transcription_complete = asyncio.Event()
 
+        # Add amplitude threshold
+        AMPLITUDE_THRESHOLD = 0.005  # Adjust this value based on testing
+
         def audio_callback(indata, frames, audiotime, status, **kwargs):
             try:
                 indata_transformed = indata.flatten().astype(np.float32) / 32768.0
+                
+                # Calculate RMS amplitude
+                amplitude = np.sqrt(np.mean(np.square(indata_transformed)))
 
-                # Insert audio chunk into the online processor
-                self.online_processor.insert_audio_chunk(indata_transformed)
-                output = self.online_processor.process_iter()
+                # Only process audio if amplitude is above threshold
+                if amplitude > AMPLITUDE_THRESHOLD:
+                    # Insert audio chunk into the online processor
+                    self.online_processor.insert_audio_chunk(indata_transformed)
+                    output = self.online_processor.process_iter()
 
-                if isinstance(output, tuple) and len(output) == 3 and isinstance(output[2], str):
-                    full_sentence = output[2]
+                    if isinstance(output, tuple) and len(output) == 3 and isinstance(output[2], str):
+                        full_sentence = output[2]
 
-                    if len(full_sentence.strip()) > 0:
-                        full_sentence = full_sentence.strip()
-                        transcript_collector.add_part(full_sentence)
-                        print(f"Human: {full_sentence}")
-                        
-                        # Execute callback in the main loop
-                        main_loop.call_soon_threadsafe(callback, full_sentence)
-                        
-                        transcript_collector.reset()
-                        transcription_complete.set()
+                        if len(full_sentence.strip()) > 0:
+                            full_sentence = full_sentence.strip()
+                            transcript_collector.add_part(full_sentence)
+                            print(f">> Human: {full_sentence}")
+                            
+                            # Execute callback in the main loop
+                            main_loop.call_soon_threadsafe(callback, full_sentence)
+                            
+                            transcript_collector.reset()
+                            transcription_complete.set()
             except Exception as e:
                 print(f"Error in audio callback: {e}")
 

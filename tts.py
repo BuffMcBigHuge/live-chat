@@ -285,21 +285,23 @@ class TextToSpeech:
 
     async def play_queue(self):
         while True:
-            if not self.is_playing and not self.audio_queue.empty():
+            try:
+                # Wait for the next audio segment
                 audio_segment = await self.audio_queue.get()
                 self.is_playing = True
-                with self.audio_lock:
-                    play(audio_segment)
+                # Remove the lock since we're already handling synchronization via the queue
+                play(audio_segment)
                 self.is_playing = False
-            await asyncio.sleep(0.1)
+                # Signal that we've finished processing this queue item
+                self.audio_queue.task_done()
+            except Exception as e:
+                print(f"Error in play_queue: {e}")
 
     async def process_chunk(self, text):
         """Process a single chunk of text into audio"""
         if not text.strip():  # Skip empty chunks
             return
         
-        print(text)
-
         audio, final_sample_rate, _ = infer_process(
             self.voice_ref_audio, self.voice_ref_text, text, self.model, device=device,
         )
@@ -322,7 +324,7 @@ class TextToSpeech:
         )
         audio_segment = audio_segment - 10  # Reduce volume
 
-        await self.audio_queue.put(audio_segment)
+        return audio_segment
 
     async def f5TTS(self, text):
         # Start the queue player if not already running
@@ -356,16 +358,15 @@ class TextToSpeech:
         chunks = chunk_text(text)
 
         try:
-            # Create tasks for all chunks to process them concurrently
-            tasks = [self.process_chunk(chunk) for chunk in chunks if chunk]
-            # Wait for all chunks to be processed
-            await asyncio.gather(*tasks)
+            # Process chunks concurrently and enqueue each result immediately
+            for chunk in chunks:
+                if chunk:
+                    audio_data = await self.process_chunk(chunk)
+                    await self.audio_queue.put(audio_data)
 
         except Exception as e:
             print(f"F5TTS inference failed: {str(e)}")
 
     def stop_playback(self):
-        # Implement logic to stop the audio playback
-        # This could involve terminating the subprocess or stopping the audio stream
-        pass
-
+         # Stop audio queue and playback
+         pass
