@@ -61,8 +61,9 @@ class SpeechToText:
             
         if self.stt_class == self.whisper:
             # Initialize the whisper streaming model
-            self.asr = FasterWhisperASR("en", "medium.en")
+            self.asr = FasterWhisperASR("en", "distil-medium.en")
             self.online_processor = OnlineASRProcessor(self.asr)
+            self.whole_speech = ""
 
     async def process(self, callback):
        await self.stt_class(callback)
@@ -73,7 +74,7 @@ class SpeechToText:
         transcription_complete = asyncio.Event()
 
         # Add amplitude threshold
-        AMPLITUDE_THRESHOLD = 0.005  # Adjust this value based on testing
+        AMPLITUDE_THRESHOLD = 0 # 0.002  # Adjust this value based on testing
 
         def audio_callback(indata, frames, audiotime, status, **kwargs):
             try:
@@ -93,7 +94,14 @@ class SpeechToText:
 
                         if len(full_sentence.strip()) > 0:
                             full_sentence = full_sentence.strip()
-                            transcript_collector.add_part(full_sentence)
+                            self.whole_speech += full_sentence
+
+                            # Ensure there is ending punctuation
+                            if not full_sentence.endswith(('.', '!', '?')):
+                                return
+                            
+                            transcript_collector.add_part(self.whole_speech)
+
                             print(f">> Human: {full_sentence}")
                             
                             # Execute callback in the main loop

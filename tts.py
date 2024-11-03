@@ -5,6 +5,7 @@ import subprocess
 import requests
 import time
 import torch
+import torchaudio
 import subprocess
 import numpy as np
 import threading
@@ -28,14 +29,16 @@ from f5_tts.infer.utils_infer import (
     load_model,
     preprocess_ref_audio_text,
     infer_process,
+    load_vocoder,
+    chunk_text,
 )
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base_bigvgan')):
     # Download model file
     print("Downloading F5-TTS model file...")
     os.makedirs(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base'), exist_ok=True)
-    url = 'https://huggingface.co/SWivid/F5-TTS/resolve/main/F5TTS_Base/model_1200000.safetensors?download=true'
+    url = 'https://huggingface.co/SWivid/F5-TTS/resolve/main/F5TTS_Base_bigvgan/model_1250000.pt?download=true'
     response = requests.get(url)
-    with open(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base/model_1200000.safetensors'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'models/F5TTS_Base_bigvgan/model_1250000.pt'), 'wb') as f:
         f.write(response.content)
 
 from pydub.playback import play
@@ -167,11 +170,12 @@ class TextToSpeech:
             dim=1024, depth=22, heads=16,
             ff_mult=2, text_dim=512, conv_layers=4
         )
-        ckpt_file = str('./models/F5TTS_Base/model_1200000.safetensors')
+        ckpt_file = str('./models/F5TTS_Base_bigvgan/model_1250000.pt')
         vocab_file = os.path.join('./F5-TTS/data/Emilia_ZH_EN_pinyin/vocab.txt')
         
         # Ensure the model is loaded correctly
-        self.model = load_model(model_cls, model_cfg, ckpt_file, vocab_file)
+        self.vocoder = load_vocoder(vocoder_name="bigvgan", device=device)
+        self.model = load_model(model_cls, model_cfg, ckpt_file, mel_spec_type="bigvgan", vocab_file=vocab_file)
         if self.model is None:
             raise ValueError("Failed to load the F5TTS model.")
 
@@ -300,7 +304,7 @@ class TextToSpeech:
             return
         
         audio, final_sample_rate, _ = infer_process(
-            self.voice_ref_audio, self.voice_ref_text, text, self.model, device=device,
+            self.voice_ref_audio, self.voice_ref_text, text, self.model, self.vocoder, device=device, mel_spec_type="bigvgan",
         )
 
         # Process audio
@@ -328,49 +332,15 @@ class TextToSpeech:
         if not self.play_task or self.play_task.done():
             self.play_task = asyncio.create_task(self.play_queue())
 
-        def chunk_text(text, target_length=50):
-            chunks = []
-            current_chunk = ""
-            
-            # Split at sentence boundaries first
-            sentences = re.split(r'([.,;?!-])', text)
-            
-            for i in range(0, len(sentences), 2):
-                part = sentences[i]
-                punctuation = sentences[i + 1] if i + 1 < len(sentences) else ""
-                
-                if len(current_chunk) + len(part) + 1 <= target_length:
-                    current_chunk += part + punctuation
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = part + punctuation
-            
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                
-            return [chunk for chunk in chunks if chunk.strip()]
+        # Split the input text into batches
+        audio, sr = torchaudio.load(self.voice_ref_audio)
+        max_chars = int(len(self.voice_ref_text.encode("utf-8")) / (audio.shape[-1] / sr) * (25 - audio.shape[-1] / sr))
+        chunks = chunk_text(text, max_chars=max_chars)
 
-        chunks = chunk_text(text)
-
-        try:
-            # Create tasks for all chunks and process them concurrently
-            tasks = []
-            for chunk in chunks:
-                if chunk:
-                    # Create a task for each chunk processing
-                    task = asyncio.create_task(self.process_chunk(chunk))
-                    tasks.append(task)
-
-            # As each task completes, enqueue its audio data
-            for task in asyncio.as_completed(tasks):
-                audio_data = await task
+        # Process chunks sequentially to maintain order
+        for chunk in chunks:
+            if chunk:
+                # Process each chunk and play it immediately
+                audio_data = await self.process_chunk(chunk)
                 if audio_data:
                     await self.audio_queue.put(audio_data)
-
-        except Exception as e:
-            print(f"F5TTS inference failed: {str(e)}")
-
-    def stop_playback(self):
-         # Stop audio queue and playback
-         pass

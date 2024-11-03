@@ -23,7 +23,7 @@ class LanguageModelProcessor:
     llm = None
     memory = None
      
-    def __init__(self, type=None, model=None):
+    def __init__(self, type=None, model_name=None):
         llm_mapping = { 
             'groq': ChatGroq, 
             'ollama': ChatOllama,
@@ -57,7 +57,7 @@ class LanguageModelProcessor:
             # Update the model_names dictionary with the fetched models
             model_names['ollama'] = ollama_models if ollama_models else ['default_model_name']
         
-        if model is None:
+        if model_name is None:
             print(f"Select the {model_type} model:")
             for i, model_name in enumerate(model_names[model_type], start=1):
                 print(f"{i}. {model_name}")
@@ -90,7 +90,7 @@ class LanguageModelProcessor:
         self.app = self.workflow.compile(checkpointer=self.memory)
 
         # Load the system prompt from a file
-        with open('system_prompt1.txt', 'r') as file:
+        with open('system_prompt3.txt', 'r') as file:
             system_prompt = file.read().strip()
 
         system_message = SystemMessage(system_prompt)
@@ -135,3 +135,8 @@ class LanguageModelProcessor:
         # Print the response
         # print(f">> LLM: {response_message.pretty_print()}")
         return response_message.content
+    
+    def reset(self):
+        self.memory.chat_memory.clear()
+        # checkpoint = MemorySaver.empty_checkpoint()
+        # self.memory.put(config={"configurable": {"thread_id": "default_thread"}}, checkpoint=checkpoint, metadata={})
