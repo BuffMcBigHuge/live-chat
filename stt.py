@@ -14,6 +14,8 @@ import torch
 import sounddevice as sd
 import numpy as np
 from whisper_online import FasterWhisperASR, OnlineASRProcessor
+from silero_vad import FixedVADIterator
+import torch.hub
 
 load_dotenv()
 
@@ -61,9 +63,16 @@ class SpeechToText:
             
         if self.stt_class == self.whisper:
             # Initialize the whisper streaming model
-            self.asr = FasterWhisperASR("en", "distil-medium.en")
+            self.asr = FasterWhisperASR("en", "turbo")
             self.online_processor = OnlineASRProcessor(self.asr)
             self.whole_speech = ""
+            
+            # Initialize Silero VAD
+            vad_model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad'
+            )
+            self.vad = FixedVADIterator(vad_model, threshold=0.2, sampling_rate=SAMPLE_RATE, min_silence_duration_ms=300, speech_pad_ms=30)
 
     async def process(self, callback):
        await self.stt_class(callback)
@@ -72,43 +81,50 @@ class SpeechToText:
         global transcript_collector
         main_loop = asyncio.get_running_loop()
         transcription_complete = asyncio.Event()
-
-        # Add amplitude threshold
-        AMPLITUDE_THRESHOLD = 0 # 0.002  # Adjust this value based on testing
+        
+        # Reduce buffer size and timeout for quicker response
+        vad_buffer = []
+        SPEECH_TIMEOUT = 0.7  # reduced from 1.5 seconds
+        MIN_SPEECH_LENGTH = 3  # minimum number of words to consider as valid speech
+        last_speech_time = time.time()
 
         def audio_callback(indata, frames, audiotime, status, **kwargs):
             try:
+                nonlocal last_speech_time
                 indata_transformed = indata.flatten().astype(np.float32) / 32768.0
                 
-                # Calculate RMS amplitude
-                amplitude = np.sqrt(np.mean(np.square(indata_transformed)))
-
-                # Only process audio if amplitude is above threshold
-                if amplitude > AMPLITUDE_THRESHOLD:
-                    # Insert audio chunk into the online processor
+                # Process with Silero VAD
+                vad_result = self.vad(indata_transformed)
+                vad_buffer.append(vad_result is not None)
+                
+                # Keep only last 5 VAD decisions (reduced from 10)
+                if len(vad_buffer) > 5:
+                    vad_buffer.pop(0)
+                
+                # Consider speech active if any recent frames contained speech
+                is_speech = any(vad_buffer)
+                
+                if is_speech:
+                    last_speech_time = time.time()
                     self.online_processor.insert_audio_chunk(indata_transformed)
                     output = self.online_processor.process_iter()
 
                     if isinstance(output, tuple) and len(output) == 3 and isinstance(output[2], str):
-                        full_sentence = output[2]
-
-                        if len(full_sentence.strip()) > 0:
-                            full_sentence = full_sentence.strip()
-                            self.whole_speech += full_sentence
-
-                            # Ensure there is ending punctuation
-                            if not full_sentence.endswith(('.', '!', '?')):
-                                return
-                            
-                            transcript_collector.add_part(self.whole_speech)
-
-                            print(f">> Human: {full_sentence}")
-                            
-                            # Execute callback in the main loop
-                            main_loop.call_soon_threadsafe(callback, full_sentence)
-                            
-                            transcript_collector.reset()
-                            transcription_complete.set()
+                        text = output[2].strip()
+                        if len(text) > 0:
+                            self.whole_speech = text
+                            transcript_collector.add_part(text)
+                
+                # Check for end of speech and process if we have enough content
+                elif time.time() - last_speech_time > SPEECH_TIMEOUT and transcript_collector.transcript_parts:
+                    full_text = transcript_collector.get_full_transcript()
+                    if len(full_text.split()) >= MIN_SPEECH_LENGTH:
+                        print(f">> Human: {full_text}")
+                        main_loop.call_soon_threadsafe(callback, full_text)
+                        transcript_collector.reset()
+                        vad_buffer.clear()
+                        transcription_complete.set()
+                        
             except Exception as e:
                 print(f"Error in audio callback: {e}")
 
@@ -165,7 +181,7 @@ class SpeechToText:
                 language="en-US",
                 encoding="linear16",
                 channels=1,
-                sample_rate=16000,
+                sample_rate=SAMPLE_RATE,
                 endpointing=300,
                 smart_format=True,
             )
@@ -173,7 +189,7 @@ class SpeechToText:
             await dg_connection.start(options)
 
             # Open a microphone stream on the default input device
-            microphone = Microphone(dg_connection.send)
+            microphone = Microphone(dg_connection.send, channels=1)
             microphone.start()
 
             await transcription_complete.wait()  # Wait for the transcription to complete instead of looping indefinitely

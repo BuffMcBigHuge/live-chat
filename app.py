@@ -1,5 +1,11 @@
-import asyncio
 import os
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["TORCH_LOGS"] = "all"
+os.environ["TORCH_SHOW_CPP_STACKTRACES"]="1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"]="backend:cudaMallocAsync"
+
+import asyncio
 import time
 import warnings
 import re
@@ -90,8 +96,24 @@ class ConversationManager:
             print(f"Sample Rate: {default_devices['output']['sample_rate']}")
             print("-" * 50)
 
-        self.stt = SpeechToText(model='whisper')
-        self.llm = LanguageModelProcessor(type='ollama')
+        # Add parrot mode selection
+        print("\nSelect mode:")
+        print("1. Normal (LLM) mode")
+        print("2. Parrot mode (repeat speech)")
+        while True:
+            try:
+                mode = int(input("Enter your choice (1 or 2): "))
+                if mode in [1, 2]:
+                    break
+                print("Invalid choice. Please enter 1 or 2.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+        
+        self.parrot_mode = (mode == 2)
+        print(f"\nRunning in {'parrot' if self.parrot_mode else 'normal'} mode...")
+
+        self.stt = SpeechToText(model='deepgram')
+        self.llm = None if self.parrot_mode else LanguageModelProcessor(type='ollama')
         self.tts = TextToSpeech(model='f5TTS')
         
         self.tts_playing = False
@@ -123,19 +145,21 @@ class ConversationManager:
                     self.is_listening = False
                     break
 
-                if "reset" in transcription.lower():
+                if "reset" in transcription.lower() and not self.parrot_mode:
                     # Remove history from memory
                     self.llm.reset()
                     continue
 
-                # Process with LLM
-                llm_response = self.llm.process(transcription)
-
-                # Remove anything between * characters
-                llm_response = re.sub(r'\*.*\*', '', llm_response)
+                # Process with LLM or parrot directly
+                if self.parrot_mode:
+                    response = transcription
+                else:
+                    response = self.llm.process(transcription)
+                    # Remove anything between * characters
+                    response = re.sub(r'\*.*\*', '', response)
                 
                 # Put response in queue for TTS
-                await self.response_queue.put(llm_response)
+                await self.response_queue.put(response)
                 
             except Exception as e:
                 print(f"Error in process_task: {e}")

@@ -58,10 +58,10 @@ class TextToSpeech:
     voice_ref_audio = None
     voice_ref_text = None
     model = None
- 
-    audio_queue = asyncio.Queue()  # Add queue for audio segments
+    audio_queue = asyncio.Queue()  # Queue for audio segments
     is_playing = False
     play_task = None
+    processing_lock = asyncio.Lock()  # Lock for processing
 
     def __init__(self, model=None, voice=None):
         tts_mapping = {
@@ -180,7 +180,16 @@ class TextToSpeech:
             raise ValueError("Failed to load the F5TTS model.")
 
     async def process(self, text):
-        await self.tts_class(text)
+        """Process text to speech"""
+        if not self.is_playing:
+            await self.tts_class(text)
+
+    async def stop_speaking(self):
+        """Stop current TTS playback"""
+        if hasattr(self, 'player_process') and self.player_process:
+            self.player_process.terminate()
+            self.player_process = None
+        self.is_playing = False
 
     @staticmethod
     def is_installed(lib_name: str) -> bool:
@@ -285,47 +294,52 @@ class TextToSpeech:
         print(f">> TTS ({elapsed_time}ms)")
 
     async def play_queue(self):
+        """Continuously play audio segments from the queue in order"""
         while True:
             try:
                 # Wait for the next audio segment
                 audio_segment = await self.audio_queue.get()
                 self.is_playing = True
-                # Remove the lock since we're already handling synchronization via the queue
+                
+                # Play the audio segment
                 play(audio_segment)
+                
                 self.is_playing = False
-                # Signal that we've finished processing this queue item
                 self.audio_queue.task_done()
             except Exception as e:
                 print(f"Error in play_queue: {e}")
 
     async def process_chunk(self, text):
         """Process a single chunk of text into audio"""
-        if not text.strip():  # Skip empty chunks
-            return
-        
-        audio, final_sample_rate, _ = infer_process(
-            self.voice_ref_audio, self.voice_ref_text, text, self.model, self.vocoder, device=device, mel_spec_type="bigvgan",
-        )
+        async with self.processing_lock:  # Ensure sequential processing
+            if not text.strip():
+                return None
+            
+            audio, final_sample_rate, _ = infer_process(
+                self.voice_ref_audio, self.voice_ref_text, text, 
+                self.model, self.vocoder, device=device, 
+                mel_spec_type="bigvgan",
+            )
 
-        # Process audio
-        final_wave = audio
-        max_val = np.max(np.abs(final_wave))
-        if max_val > 0:
-            final_wave = final_wave / max_val
+            # Process audio
+            final_wave = audio
+            max_val = np.max(np.abs(final_wave))
+            if max_val > 0:
+                final_wave = final_wave / max_val
 
-        final_wave = (final_wave * 32767).astype(np.int16)
-        sample_width = final_wave.dtype.itemsize
+            final_wave = (final_wave * 32767).astype(np.int16)
+            sample_width = final_wave.dtype.itemsize
 
-        # Convert to AudioSegment
-        audio_segment = AudioSegment(
-            final_wave.tobytes(),
-            frame_rate=final_sample_rate,
-            sample_width=sample_width,
-            channels=1
-        )
-        audio_segment = audio_segment - 10  # Reduce volume
+            # Convert to AudioSegment
+            audio_segment = AudioSegment(
+                final_wave.tobytes(),
+                frame_rate=final_sample_rate,
+                sample_width=sample_width,
+                channels=1
+            )
+            audio_segment = audio_segment - 10  # Reduce volume
 
-        return audio_segment
+            return audio_segment
 
     async def f5TTS(self, text):
         # Start the queue player if not already running
@@ -337,10 +351,11 @@ class TextToSpeech:
         max_chars = int(len(self.voice_ref_text.encode("utf-8")) / (audio.shape[-1] / sr) * (25 - audio.shape[-1] / sr))
         chunks = chunk_text(text, max_chars=max_chars)
 
-        # Process chunks sequentially to maintain order
-        for chunk in chunks:
-            if chunk:
-                # Process each chunk and play it immediately
-                audio_data = await self.process_chunk(chunk)
-                if audio_data:
-                    await self.audio_queue.put(audio_data)
+        # Create tasks for processing all chunks
+        processing_tasks = [self.process_chunk(chunk) for chunk in chunks if chunk]
+        
+        # Process chunks concurrently and add to queue as they complete
+        for audio_future in asyncio.as_completed(processing_tasks):
+            audio_data = await audio_future
+            if audio_data:
+                await self.audio_queue.put(audio_data)

@@ -137,6 +137,21 @@ class LanguageModelProcessor:
         return response_message.content
     
     def reset(self):
-        self.memory.chat_memory.clear()
-        # checkpoint = MemorySaver.empty_checkpoint()
-        # self.memory.put(config={"configurable": {"thread_id": "default_thread"}}, checkpoint=checkpoint, metadata={})
+        # Create empty checkpoint
+        checkpoint = self.memory.empty_checkpoint()
+        
+        # Load the system prompt from file
+        with open('system_prompt3.txt', 'r') as file:
+            system_prompt = file.read().strip()
+        system_message = SystemMessage(system_prompt)
+        
+        # Reset the state with just the system message
+        config = {"configurable": {"thread_id": "default_thread"}}
+        self.app.update_state(config, {"messages": [system_message]})
+        
+        # Update memory with empty checkpoint
+        self.memory.put(
+            config=config,
+            checkpoint=checkpoint,
+            metadata={}
+        )
